@@ -4,3 +4,4 @@ subs.sup
 /.idea
 *.iml
 .DS_Store
+*.tiff

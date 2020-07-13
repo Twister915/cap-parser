@@ -9,7 +9,7 @@ use self::nom::{
     sequence::{preceded, tuple},
     branch::alt,
     InputTake,
-    IResult
+    IResult,
 };
 
 use crate::parser::types::*;
@@ -52,7 +52,7 @@ fn seg_pds<'a, E: ParseError<&'a [u8]>>(
         context("version", be_u8),
         context("entries", count(seg_pds_entry, usize::from((size - 2) / 5)))
     )), |(id, version, entries)| {
-        Segment::PaletteDefinitionSegment { id, version, entries }
+        Segment::PaletteDefinitionSegment(PaletteDefinition { id, version, entries })
     })
 }
 
@@ -87,7 +87,7 @@ fn seg_ods<'a, E: ParseError<&'a [u8]>>(
         let (rest, data_raw) = after_info.take_split((data_size - 4) as usize);
         let (_, rle_data) = rle_data(data_raw)?;
 
-        Ok((&rest, Segment::ObjectDefinitionSegment {
+        Ok((&rest, Segment::ObjectDefinitionSegment(ObjectDefinition {
             id,
             version,
             is_last_in_sequence: !((flag_raw & 0x40) == 0),
@@ -95,7 +95,7 @@ fn seg_ods<'a, E: ParseError<&'a [u8]>>(
             width,
             height,
             data_raw: rle_data,
-        }))
+        })))
     }
 }
 
@@ -194,7 +194,7 @@ fn seg_pcs<'a, E: ParseError<&'a [u8]>>(
             count(context("composition_object", composition_object), usize::from(n_obj))
         })
     )), |(w, h, _, cn, s, u, pid, objs)| {
-        Segment::PresentationCompositionSegment {
+        Segment::PresentationCompositionSegment(PresentationComposition {
             width: w,
             height: h,
             number: cn,
@@ -202,7 +202,7 @@ fn seg_pcs<'a, E: ParseError<&'a [u8]>>(
             palette_update: u,
             palette_id: pid,
             objects: objs,
-        }
+        })
     })
 }
 
@@ -277,7 +277,7 @@ fn seg_wds_win<'a, E: ParseError<&'a [u8]>>(
     })(i)
 }
 
-pub(crate) fn packet_root<'a, E: ParseError<&'a [u8]>>(
+pub fn packet<'a, E: ParseError<&'a [u8]>>(
     i: &'a [u8],
 ) -> IResult<&'a [u8], Packet, E> {
     context("packet",

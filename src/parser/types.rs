@@ -17,37 +17,42 @@ pub enum CompositionState {
 #[derive(Derivative, PartialEq, Clone)]
 #[derivative(Debug)]
 pub enum Segment {
-    PresentationCompositionSegment {
-        width: u16,
-        height: u16,
-        number: u16,
-        state: CompositionState,
-        palette_update: bool,
-        palette_id: u8,
-        objects: Vec<CompositionObject>,
-    },
-
+    PresentationCompositionSegment(PresentationComposition),
     WindowDefinitionSegment(Vec<WindowDefinition>),
-
-    PaletteDefinitionSegment {
-        id: u8,
-        version: u8,
-        entries: Vec<PaletteEntry>,
-    },
-
-    #[allow(dead_code)]
-    ObjectDefinitionSegment {
-        id: u16,
-        version: u8,
-        is_last_in_sequence: bool,
-        is_first_in_sequence: bool,
-        width: u16,
-        height: u16,
-        #[derivative(Debug="ignore")]
-        data_raw: RLEData,
-    },
-
+    PaletteDefinitionSegment(PaletteDefinition),
+    ObjectDefinitionSegment(ObjectDefinition),
     End,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct PresentationComposition {
+    pub width: u16,
+    pub height: u16,
+    pub number: u16,
+    pub state: CompositionState,
+    pub palette_update: bool,
+    pub palette_id: u8,
+    pub objects: Vec<CompositionObject>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct PaletteDefinition {
+    pub id: u8,
+    pub version: u8,
+    pub entries: Vec<PaletteEntry>,
+}
+
+#[derive(Derivative, PartialEq, Clone)]
+#[derivative(Debug)]
+pub struct ObjectDefinition {
+    pub id: u16,
+    pub version: u8,
+    pub is_last_in_sequence: bool,
+    pub is_first_in_sequence: bool,
+    pub width: u16,
+    pub height: u16,
+    #[derivative(Debug = "ignore")]
+    pub data_raw: RLEData,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -82,10 +87,10 @@ pub struct WindowDefinition {
 #[derive(Debug, PartialEq, Clone)]
 pub struct PaletteEntry {
     pub id: u8,
-    pub color: YCrCbAColor
+    pub color: YCrCbAColor,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct YCrCbAColor {
     pub y: u8,
     pub cr: u8,
@@ -108,12 +113,10 @@ pub enum RLEEntry {
 pub type RLEData = Vec<RLEEntry>;
 
 pub trait RleDecode {
-
     fn to_byte_lines(&self) -> Vec<Vec<u8>>;
 }
 
 impl RleDecode for RLEData {
-
     fn to_byte_lines(&self) -> Vec<Vec<u8>> {
         let mut lines: Vec<Vec<u8>> = Vec::new();
         let mut line: Vec<u8> = Vec::new();
@@ -121,8 +124,8 @@ impl RleDecode for RLEData {
             match entry {
                 RLEEntry::Single(b) => {
                     line.push(*b);
-                },
-                RLEEntry::Repeated{count, color} => {
+                }
+                RLEEntry::Repeated { count, color } => {
                     line.resize(line.len() + (*count as usize), *color);
                 }
                 RLEEntry::EndOfLine => {
