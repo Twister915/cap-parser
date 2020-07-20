@@ -1,27 +1,26 @@
 #[macro_use]
 extern crate derivative;
 
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::Path;
+
+use image::ImageError;
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
+use leptess::capi;
+use leptess::leptonica::pix_read;
+use leptess::tesseract::TessApi;
+use nom::error::VerboseError;
+
+use crate::parser::parse::packet;
+use crate::parser::renderer::{Display, Handler};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-use std::fs::File;
-
 mod parser;
-
-use std::io::{Read, Write};
-use nom::error::VerboseError;
-use crate::parser::renderer::{Handler, Display};
-use crate::parser::parse::packet;
-use leptess::tesseract::{TessApi, TessInitError};
-use leptess::leptonica::pix_read;
-use std::path::Path;
-use image::ImageError;
-use leptess::capi;
-use std::ffi::{CStr, CString};
 
 fn main() -> std::io::Result<()> {
     let mut f = File::open("subs.sup")?;
@@ -66,7 +65,10 @@ fn do_parse<'a>(i: &'a [u8]) -> String {
     // }.unwrap();
 
     unsafe {
-        capi::TessBaseAPISetPageSegMode(tess.raw, leptess::capi::TessPageSegMode_PSM_SPARSE_TEXT_OSD);
+        capi::TessBaseAPISetPageSegMode(
+            tess.raw,
+            leptess::capi::TessPageSegMode_PSM_SPARSE_TEXT_OSD,
+        );
     };
 
     while !rest.is_empty() {
@@ -81,10 +83,8 @@ fn do_parse<'a>(i: &'a [u8]) -> String {
                                 //          frame, img.x, img.y, img.x + w, img.y + h, img.begin_mis, img.dur_mis);
                                 // frame = frame + 1;
                                 match display_to_text(&mut tess, &frame, &img) {
-                                    Ok(data) => {
-                                        out = out + &data
-                                    }
-                                    Err(error) => eprintln!("error {:#?}\n", error)
+                                    Ok(data) => out = out + &data,
+                                    Err(error) => eprintln!("error {:#?}\n", error),
                                 }
                                 frame = frame + 1;
                             }
@@ -102,7 +102,7 @@ fn do_parse<'a>(i: &'a [u8]) -> String {
                 return "error".to_string();
             }
         }
-    };
+    }
 
     out
 }
@@ -127,7 +127,13 @@ fn display_to_text(tess: &mut TessApi, frame: &u32, d: &Display) -> Result<Strin
     }
     let text = post_process_text(tess.get_utf8_text().unwrap());
 
-    Ok(format!("{}\n{} --> {}\n{}\n\n", frame + 1, format_timestamp_microsec(d.begin_mis), format_timestamp_microsec(d.begin_mis + d.dur_mis), text))
+    Ok(format!(
+        "{}\n{} --> {}\n{}\n\n",
+        frame + 1,
+        format_timestamp_microsec(d.begin_mis),
+        format_timestamp_microsec(d.begin_mis + d.dur_mis),
+        text
+    ))
 }
 
 fn format_timestamp_microsec(ms: u64) -> String {

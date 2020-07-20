@@ -1,37 +1,30 @@
 extern crate nom;
 
-use self::nom::{
-    bytes::complete::tag,
-    combinator::{flat_map, map, value},
-    error::{ErrorKind, ParseError, context},
-    multi::{count, many1},
-    number::complete::{be_u8, be_u16, be_u24, be_u32},
-    sequence::{preceded, tuple},
-    branch::alt,
-    InputTake,
-    IResult,
-};
-
 use crate::parser::types::*;
 
-fn timestamp<'a, E: ParseError<&'a [u8]>>(
-    i: &'a [u8],
-) -> IResult<&'a [u8], Timestamp, E> {
+use self::nom::{
+    branch::alt,
+    bytes::complete::tag,
+    combinator::{flat_map, map, value},
+    error::{context, ErrorKind, ParseError},
+    multi::{count, many1},
+    number::complete::{be_u16, be_u24, be_u32, be_u8},
+    sequence::{preceded, tuple},
+    IResult, InputTake,
+};
+
+fn timestamp<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], Timestamp, E> {
     map(be_u32, Timestamp::from)(i)
 }
 
 fn bool_byte<'a, E: ParseError<&'a [u8]>>(
-    f_val: u8, t_val: u8,
+    f_val: u8,
+    t_val: u8,
 ) -> impl Fn(&'a [u8]) -> IResult<&'a [u8], bool, E> {
-    alt((
-        value(false, tag([f_val])),
-        value(true, tag([t_val])),
-    ))
+    alt((value(false, tag([f_val])), value(true, tag([t_val]))))
 }
 
-fn segment<'a, E: ParseError<&'a [u8]>>(
-    i: &'a [u8],
-) -> IResult<&'a [u8], Segment, E> {
+fn segment<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], Segment, E> {
     let (rest, (seg_type, size)) = tuple((be_u8, be_u16))(i)?;
 
     match seg_type {
@@ -40,34 +33,43 @@ fn segment<'a, E: ParseError<&'a [u8]>>(
         0x16 => context("pcs", seg_pcs(size))(rest),
         0x17 => context("wds", seg_wds(size))(rest),
         0x80 => Ok((rest, Segment::End)),
-        _ => Err(nom::Err::Error(nom::error::make_error(i, ErrorKind::Eof)))
+        _ => Err(nom::Err::Error(nom::error::make_error(i, ErrorKind::Eof))),
     }
 }
 
 fn seg_pds<'a, E: ParseError<&'a [u8]>>(
-    size: u16
+    size: u16,
 ) -> impl Fn(&'a [u8]) -> IResult<&'a [u8], Segment, E> {
-    map(tuple((
-        context("id", be_u8),
-        context("version", be_u8),
-        context("entries", count(seg_pds_entry, usize::from((size - 2) / 5)))
-    )), |(id, version, entries)| {
-        Segment::PaletteDefinitionSegment(PaletteDefinition { id, version, entries })
-    })
+    map(
+        tuple((
+            context("id", be_u8),
+            context("version", be_u8),
+            context("entries", count(seg_pds_entry, usize::from((size - 2) / 5))),
+        )),
+        |(id, version, entries)| {
+            Segment::PaletteDefinitionSegment(PaletteDefinition {
+                id,
+                version,
+                entries,
+            })
+        },
+    )
 }
 
-fn seg_pds_entry<'a, E: ParseError<&'a [u8]>>(
-    i: &'a [u8],
-) -> IResult<&'a [u8], PaletteEntry, E> {
-    map(tuple((
-        context("id", be_u8),
-        context("y", be_u8),
-        context("Cr", be_u8),
-        context("Cb", be_u8),
-        context("a", be_u8),
-    )), |(id, y, cr, cb, a)| {
-        PaletteEntry { id, color: YCrCbAColor { y, cr, cb, a } }
-    })(i)
+fn seg_pds_entry<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], PaletteEntry, E> {
+    map(
+        tuple((
+            context("id", be_u8),
+            context("y", be_u8),
+            context("Cr", be_u8),
+            context("Cb", be_u8),
+            context("a", be_u8),
+        )),
+        |(id, y, cr, cb, a)| PaletteEntry {
+            id,
+            color: YCrCbAColor { y, cr, cb, a },
+        },
+    )(i)
 }
 
 fn seg_ods<'a, E: ParseError<&'a [u8]>>(
@@ -87,27 +89,26 @@ fn seg_ods<'a, E: ParseError<&'a [u8]>>(
         let (rest, data_raw) = after_info.take_split((data_size - 4) as usize);
         let (_, rle_data) = rle_data(data_raw)?;
 
-        Ok((&rest, Segment::ObjectDefinitionSegment(ObjectDefinition {
-            id,
-            version,
-            is_last_in_sequence: !((flag_raw & 0x40) == 0),
-            is_first_in_sequence: !((flag_raw & 0x80) == 0),
-            width,
-            height,
-            data_raw: rle_data,
-        })))
+        Ok((
+            &rest,
+            Segment::ObjectDefinitionSegment(ObjectDefinition {
+                id,
+                version,
+                is_last_in_sequence: !((flag_raw & 0x40) == 0),
+                is_first_in_sequence: !((flag_raw & 0x80) == 0),
+                width,
+                height,
+                data_raw: rle_data,
+            }),
+        ))
     }
 }
 
-fn rle_data<'a, E: ParseError<&'a [u8]>>(
-    i: &'a [u8],
-) -> IResult<&'a [u8], Vec<RLEEntry>, E> {
+fn rle_data<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], Vec<RLEEntry>, E> {
     many1(rle_entry)(i)
 }
 
-fn rle_entry<'a, E: ParseError<&'a [u8]>>(
-    i: &'a [u8],
-) -> IResult<&'a [u8], RLEEntry, E> {
+fn rle_entry<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], RLEEntry, E> {
     if i.is_empty() {
         return Err(nom::Err::Error(nom::error::make_error(i, ErrorKind::Eof)));
     }
@@ -140,47 +141,54 @@ fn rle_entry<'a, E: ParseError<&'a [u8]>>(
     let col = if b1 & 0x80 == 0 {
         0
     } else {
-        l_consumed = l_consumed +1;
+        l_consumed = l_consumed + 1;
         i[l_consumed]
     };
 
-    let rest = &i[((1+l_consumed) as usize)..];
-    Ok((rest, RLEEntry::Repeated {
-        color: col,
-        count: l,
-    }))
+    let rest = &i[((1 + l_consumed) as usize)..];
+    Ok((
+        rest,
+        RLEEntry::Repeated {
+            color: col,
+            count: l,
+        },
+    ))
 }
 
 fn seg_pcs<'a, E: ParseError<&'a [u8]>>(
-    _: u16
+    _: u16,
 ) -> impl Fn(&'a [u8]) -> IResult<&'a [u8], Segment, E> {
-    map(tuple((
-        context("width", be_u16),
-        context("height", be_u16),
-        context("frame_rate", be_u8),
-        context("composition_number", be_u16),
-        context("state", seg_pcs_cs),
-        context("palette_update", bool_byte(0x00, 0x80)),
-        context("palette_id", be_u8),
-        flat_map(be_u8, |n_obj| {
-            count(context("composition_object", composition_object), usize::from(n_obj))
-        })
-    )), |(w, h, _, cn, s, u, pid, objs)| {
-        Segment::PresentationCompositionSegment(PresentationComposition {
-            width: w,
-            height: h,
-            number: cn,
-            state: s,
-            palette_update: u,
-            palette_id: pid,
-            objects: objs,
-        })
-    })
+    map(
+        tuple((
+            context("width", be_u16),
+            context("height", be_u16),
+            context("frame_rate", be_u8),
+            context("composition_number", be_u16),
+            context("state", seg_pcs_cs),
+            context("palette_update", bool_byte(0x00, 0x80)),
+            context("palette_id", be_u8),
+            flat_map(be_u8, |n_obj| {
+                count(
+                    context("composition_object", composition_object),
+                    usize::from(n_obj),
+                )
+            }),
+        )),
+        |(w, h, _, cn, s, u, pid, objs)| {
+            Segment::PresentationCompositionSegment(PresentationComposition {
+                width: w,
+                height: h,
+                number: cn,
+                state: s,
+                palette_update: u,
+                palette_id: pid,
+                objects: objs,
+            })
+        },
+    )
 }
 
-fn seg_pcs_cs<'a, E: ParseError<&'a [u8]>>(
-    i: &'a [u8],
-) -> IResult<&'a [u8], CompositionState, E> {
+fn seg_pcs_cs<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], CompositionState, E> {
     alt((
         value(CompositionState::Normal, tag([0x00])),
         value(CompositionState::AcquisitionPoint, tag([0x40])),
@@ -200,25 +208,34 @@ fn composition_object<'a, E: ParseError<&'a [u8]>>(
     ))(i)?;
 
     let (i2, crop) = if is_crop {
-        map(tuple((
-            context("crop_x", be_u16),
-            context("crop_y", be_u16),
-            context("crop_w", be_u16),
-            context("crop_h", be_u16))
-        ), |(x, y, width, height)| {
-            CompositionObjectCrop::Cropped { x, y, width, height }
-        })(i1)
+        map(
+            tuple((
+                context("crop_x", be_u16),
+                context("crop_y", be_u16),
+                context("crop_w", be_u16),
+                context("crop_h", be_u16),
+            )),
+            |(x, y, width, height)| CompositionObjectCrop::Cropped {
+                x,
+                y,
+                width,
+                height,
+            },
+        )(i1)
     } else {
         Ok((i1, CompositionObjectCrop::NotCropped))
     }?;
 
-    Ok((i2, CompositionObject {
-        id: oid,
-        window_id: wid,
-        x,
-        y,
-        crop,
-    }))
+    Ok((
+        i2,
+        CompositionObject {
+            id: oid,
+            window_id: wid,
+            x,
+            y,
+            crop,
+        },
+    ))
 }
 
 fn seg_wds<'a, E: ParseError<&'a [u8]>>(
@@ -227,35 +244,47 @@ fn seg_wds<'a, E: ParseError<&'a [u8]>>(
     map(
         preceded(
             context("num_windows", be_u8),
-            context("windows", count(
-                context("def", seg_wds_win),
-                usize::from((size - 1) / 9)))),
-        |w| {
-            Segment::WindowDefinitionSegment(w)
-        })
+            context(
+                "windows",
+                count(context("def", seg_wds_win), usize::from((size - 1) / 9)),
+            ),
+        ),
+        |w| Segment::WindowDefinitionSegment(w),
+    )
 }
 
-fn seg_wds_win<'a, E: ParseError<&'a [u8]>>(
-    i: &'a [u8],
-) -> IResult<&'a [u8], WindowDefinition, E> {
-    map(tuple((
-        context("id", be_u8),
-        context("x", be_u16),
-        context("y", be_u16),
-        context("width", be_u16),
-        context("height", be_u16)
-    )), |(id, x, y, width, height)| {
-        WindowDefinition { id, x, y, width, height }
-    })(i)
+fn seg_wds_win<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], WindowDefinition, E> {
+    map(
+        tuple((
+            context("id", be_u8),
+            context("x", be_u16),
+            context("y", be_u16),
+            context("width", be_u16),
+            context("height", be_u16),
+        )),
+        |(id, x, y, width, height)| WindowDefinition {
+            id,
+            x,
+            y,
+            width,
+            height,
+        },
+    )(i)
 }
 
-pub fn packet<'a, E: ParseError<&'a [u8]>>(
-    i: &'a [u8],
-) -> IResult<&'a [u8], Packet, E> {
-    context("packet",
-            map(preceded(tag(b"PG"), tuple((
-                context("pts", timestamp),
-                context("dts", timestamp),
-                context("segment", segment)))),
-                |(pts, dts, segment)| Packet { pts, dts, segment }))(i)
+pub fn packet<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], Packet, E> {
+    context(
+        "packet",
+        map(
+            preceded(
+                tag(b"PG"),
+                tuple((
+                    context("pts", timestamp),
+                    context("dts", timestamp),
+                    context("segment", segment),
+                )),
+            ),
+            |(pts, dts, segment)| Packet { pts, dts, segment },
+        ),
+    )(i)
 }
