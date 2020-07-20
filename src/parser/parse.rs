@@ -108,75 +108,47 @@ fn rle_data<'a, E: ParseError<&'a [u8]>>(
 fn rle_entry<'a, E: ParseError<&'a [u8]>>(
     i: &'a [u8],
 ) -> IResult<&'a [u8], RLEEntry, E> {
-    // no bytes, error
     if i.is_empty() {
-        Err(nom::Err::Error(nom::error::make_error(i, ErrorKind::Eof)))
-    } else {
-        let b0 = i[0];
-        // first byte is 0, check second byte
-        if b0 == 0x0 {
-            // no second byte, error
-            if i.len() < 2 {
-                Err(nom::Err::Error(nom::error::make_error(i, ErrorKind::Eof)))
-            } else {
-                let b1 = i[1];
-                // no third byte?
-                if i.len() < 3 {
-                    // if the second byte is 0, then this is EOL
-                    // otherwise, error
-                    if b1 == 0x00 {
-                        Ok((&i[2..], RLEEntry::EndOfLine))
-                    } else {
-                        Err(nom::Err::Error(nom::error::make_error(i, ErrorKind::Eof)))
-                    }
-                } else {
-                    // if 7th bit is 0, then the length is encoded in 6 bits
-                    if b1 & 0x40 == 0 {
-                        // if b1 is 0 then color is 0
-                        // otherwise color is contents of next byte (3rd byte)
-                        let (color, skip) = if b1 == 0x00 {
-                            (0, 2)
-                        } else {
-                            (i[2], 3)
-                        };
-
-                        let rest = &i[skip..];
-                        let count = (b1 as u16) & ((1 << 6) - 1);
-                        Ok((rest, RLEEntry::Repeated {
-                            count,
-                            color,
-                        }))
-                    } else { // if 7th bit is 1:
-                        // length is 2nd byte, except first 2 bits, and 3rd byte
-                        let b2 = i[2];
-                        let count = (((b1 as u16) & ((1 << 6) - 1)) << 8) | (b2 as u16);
-
-                        // if the 8th bit is 0, then the color is 0
-                        // otherwise, the color is encoded in the 4th byte
-                        if b1 & 0x80 == 0 {
-                            Ok((&i[3..], RLEEntry::Repeated {
-                                count,
-                                color: 0,
-                            }))
-                        } else {
-                            // if there is no 4th byte, that's an error
-                            if i.len() < 4 {
-                                Err(nom::Err::Error(nom::error::make_error(i, ErrorKind::Eof)))
-                            } else {
-                                let color = i[3];
-                                Ok((&i[4..], RLEEntry::Repeated {
-                                    count,
-                                    color,
-                                }))
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            Ok((&i[1..], RLEEntry::Single(i[0])))
-        }
+        return Err(nom::Err::Error(nom::error::make_error(i, ErrorKind::Eof)));
     }
+
+    let b0 = i[0];
+    if b0 != 0 {
+        return Ok((&i[1..], RLEEntry::Single(b0)));
+    }
+
+    if i.len() < 2 {
+        return Err(nom::Err::Error(nom::error::make_error(i, ErrorKind::Eof)));
+    }
+
+    let b1 = i[1];
+    if b1 == 0 {
+        return Ok((&i[2..], RLEEntry::EndOfLine));
+    }
+
+    let mut l = (b1 & 0x3F) as u16;
+    let mut l_consumed = 1;
+    if b1 & 0x40 != 0 {
+        if i.len() < 3 {
+            return Err(nom::Err::Error(nom::error::make_error(i, ErrorKind::Eof)));
+        }
+
+        l_consumed = 2;
+        l = l << 8 | i[2] as u16;
+    }
+
+    let col = if b1 & 0x80 == 0 {
+        0
+    } else {
+        l_consumed = l_consumed +1;
+        i[l_consumed]
+    };
+
+    let rest = &i[((1+l_consumed) as usize)..];
+    Ok((rest, RLEEntry::Repeated {
+        color: col,
+        count: l,
+    }))
 }
 
 fn seg_pcs<'a, E: ParseError<&'a [u8]>>(

@@ -2,7 +2,7 @@ use image::{RgbaImage, Rgba, ImageBuffer};
 use nom::lib::std::collections::HashMap;
 use crate::parser::types::{YCrCbAColor, RLEEntry, CompositionObject, WindowDefinition, Packet, Segment, PresentationComposition, ObjectDefinition, Timestamp};
 use std::cmp::{min, max};
-use crate::parser::types::CompositionState::EpochStart;
+use crate::parser::types::CompositionState::{EpochStart, AcquisitionPoint};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Display {
@@ -30,7 +30,9 @@ pub struct Handler {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum HandleError {}
+pub enum HandleError {
+    BadObjectDefinition
+}
 
 impl Handler {
     pub fn new() -> Handler {
@@ -48,12 +50,6 @@ impl Handler {
     pub fn handle(&mut self, packet: Packet) -> Result<Option<Display>, HandleError> {
         match packet.segment {
             Segment::PresentationCompositionSegment(pcs) => {
-                let res = if pcs.state == EpochStart {
-                    self.generate_display()
-                } else {
-                    None
-                };
-
                 self.begin_at = match self.begin_at {
                     Some(v) => {
                         if packet.pts < v {
@@ -80,6 +76,12 @@ impl Handler {
                     }
                 };
 
+                let res = if pcs.objects.is_empty() {
+                    self.generate_display()
+                } else {
+                    None
+                };
+
                 self.composition = Some(pcs.clone());
                 for obj in pcs.objects {
                     self.comp_objects.insert(obj.id, obj);
@@ -95,25 +97,17 @@ impl Handler {
                 Ok(None)
             }
             Segment::PaletteDefinitionSegment(pds) => {
-                match self.palettes.get_mut(&pds.id) {
-                    Some(p) => {
-                        for entry in pds.entries {
-                            p[entry.id as usize] = entry.color;
-                        }
-                    }
-                    None => {
-                        let mut p: [YCrCbAColor; 256] = [YCrCbAColor { y: 16, cr: 128, cb: 128, a: 0 }; 256];
-                        for entry in pds.entries {
-                            p[entry.id as usize] = entry.color;
-                        }
+                let mut p: [YCrCbAColor; 256] = [YCrCbAColor { y: 16, cr: 128, cb: 128, a: 0 }; 256];
+                for entry in pds.entries {
+                    p[entry.id as usize] = entry.color;
+                }
 
-                        self.palettes.insert(pds.id.clone(), p);
-                    }
-                };
+                self.palettes.insert(pds.id.clone(), p);
 
                 Ok(None)
             }
             Segment::ObjectDefinitionSegment(ods) => {
+                self.verify_object_data(&ods)?;
                 self.object_data.insert(ods.id, ods);
                 Ok(None)
             }
@@ -121,6 +115,26 @@ impl Handler {
                 Ok(None)
             }
         }
+    }
+
+    fn verify_object_data(&self, data: &ObjectDefinition) -> Result<(), HandleError> {
+        if rle_total_count(&data.data_raw) != data.width as usize * data.height as usize {
+            return Err(HandleError::BadObjectDefinition);
+        }
+
+        let comp_obj_option = self.comp_objects.get(&data.id);
+        if comp_obj_option.is_none() {
+            return Err(HandleError::BadObjectDefinition);
+        }
+
+        let comp_obj = comp_obj_option.unwrap();
+
+        let win_option = self.windows.get(&comp_obj.window_id);
+        if win_option.is_none() {
+            return Err(HandleError::BadObjectDefinition);
+        }
+
+        return Ok(())
     }
 
     fn generate_display(&mut self) -> Option<Display> {
@@ -134,14 +148,15 @@ impl Handler {
         let mut img_y: u32 = pcs.height as u32;
         let mut img_width: u32 = 0;
         let mut img_height: u32 = 0;
-        for window in self.windows.values() {
-            let x32 = window.x as u32;
-            let y32 = window.y as u32;
+        for co in &pcs.objects {
+            let ods = self.object_data.get(&co.id)?;
+            let x32 = co.x as u32;
+            let y32 = co.y as u32;
             img_x = min(img_x, x32);
             img_y = min(img_y, y32);
 
-            let proposed_width = (x32 - img_x) + window.width as u32;
-            let proposed_height = (y32 - img_y) + window.height as u32;
+            let proposed_width = (x32 - img_x) + ods.width as u32;
+            let proposed_height = (y32 - img_y) + ods.height as u32;
             img_width = max(img_width, proposed_width);
             img_height = max(img_height, proposed_height);
         }
@@ -149,20 +164,21 @@ impl Handler {
         const PADDING_PERCENT_X: f32 = 0.12;
         const PADDING_PERCENT_Y: f32 = 0.03;
         let padding_x = (pcs.width as f32 * PADDING_PERCENT_X) as u32;
-        let dx = img_x - max(0, img_x - padding_x);
+        let dx = img_x - (max(0, img_x as i32 - padding_x as i32) as u32);
         img_width = img_width + (2 * dx);
         img_x = img_x - dx;
 
         let padding_y = (pcs.height as f32 * PADDING_PERCENT_Y) as u32;
-        let dy = img_y - max(0, img_y - padding_y);
+        let dy = img_y - (max(0, img_y as i32 - padding_y as i32) as u32);
         img_height = img_height + (2 * dy);
         img_y = img_y - dy;
 
         let mut img_data = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(img_width, img_height);
 
         let palette = self.palettes.get(&pcs.palette_id)?;
-        for (id, obj) in &self.object_data {
-            let comp_obj = self.comp_objects.get(&id)?;
+        for comp_obj in &pcs.objects {
+            let id = comp_obj.id;
+            let obj = self.object_data.get(&id)?;
             let window = self.windows.get(&comp_obj.window_id)?;
             let x0: u32 = comp_obj.x as u32 - img_x;
             let y0: u32 = comp_obj.y as u32 - img_y;
@@ -186,10 +202,6 @@ impl Handler {
                 match d {
                     RLEEntry::Single(b) => {
                         let color = ycbcra_to_rgba(&palette[*b as usize]);
-                        if x_offset < obj_width_show && y_offset < obj_height_show {
-                            img_data.put_pixel(x0 + x_offset, y0 + y_offset, color);
-                        }
-                        x_offset = x_offset + 1;
                         if x_offset >= obj_width {
                             x_offset = 0;
                             y_offset = y_offset + 1;
@@ -197,25 +209,35 @@ impl Handler {
                                 return None;
                             }
                         }
+
+                        if x_offset < obj_width_show && y_offset < obj_height_show {
+                            img_data.put_pixel(x0 + x_offset, y0 + y_offset, color);
+                        }
+                        x_offset = x_offset + 1;
                     }
                     RLEEntry::Repeated { color: b, count } => {
                         let color = ycbcra_to_rgba(&palette[*b as usize]);
                         for _ in 0..*count {
-                            if x_offset < obj_width_show && y_offset < obj_height_show {
-                                img_data.put_pixel(x0 + x_offset, y0 + y_offset, color);
-                            }
-                            x_offset = x_offset + 1;
-                            if x_offset >= obj_width {
+                            if x_offset >= obj_width  {
                                 x_offset = 0;
                                 y_offset = y_offset + 1;
                                 if y_offset > obj_height {
                                     return None;
                                 }
                             }
+
+                            if x_offset < obj_width_show && y_offset < obj_height_show {
+                                img_data.put_pixel(x0 + x_offset, y0 + y_offset, color);
+                            }
+                            x_offset = x_offset + 1;
                         }
                     }
                     RLEEntry::EndOfLine => {
-                        // skip?
+                        x_offset = 0;
+                        y_offset = y_offset + 1;
+                        if y_offset > obj_height {
+                            return None;
+                        }
                     }
                 };
             }
@@ -248,17 +270,54 @@ impl Handler {
 }
 
 fn ycbcra_to_rgba(p: &YCrCbAColor) -> Rgba<u8> {
-    let y = ((p.y as f64) - 16.0) * 1.164383562;
-    let cb = (p.cb as f64) - 128.0;
-    let cr = (p.cr as f64) - 128.0;
+    let mut y = p.y as f64;
+    let mut cb = p.cb as f64;
+    let mut cr = p.cr as f64;
 
-    let r = (((y + (cr * 1.792741071)) + 0.5) * (255.0 / 235.0)) as u8;
-    let g = (((y - (cr * 0.5329093286) - (cb * 0.2132486143)) + 0.5) * (255.0 / 235.0)) as u8;
-    let b = (((y + (cb * 2.112401786)) + 0.5) * (255.0 / 235.0)) as u8;
+    y -= 16.0;
+    cb -= 128.0;
+    cr -= 128.0;
+
+    let y1 = y * 1.164383562;
+
+    let rf = y1 + (cr * 1.792741071);
+    let gf = y1 - (cr * 0.5329093286) - (cb * 0.2132486143);
+    let bf = y1 + (cb * 2.112401786);
+
+    let r = constrain_double_to_byte(rf + 0.5);
+    let g = constrain_double_to_byte(gf + 0.5);
+    let b = constrain_double_to_byte(bf + 0.5);
 
     Rgba::<u8>([r, g, b, p.a])
 }
 
+fn constrain_double_to_byte(data: f64) -> u8 {
+    if data > 255.0 {
+        255
+    } else if data < 0.0 {
+        0
+    } else {
+        data as u8
+    }
+}
+
 fn pts_to_microsec(ts: Timestamp) -> u64 {
     return (ts as u64 / 9) * 100;
+}
+
+fn rle_total_count(data: &Vec<RLEEntry>) -> usize {
+    let mut out: usize = 0;
+    for entry in data {
+        match entry {
+            RLEEntry::Repeated {count: c, color: _} => {
+                out += *c as usize;
+            },
+            RLEEntry::Single(_) => {
+                out += 1
+            },
+            RLEEntry::EndOfLine => {}
+        };
+    }
+
+    out
 }
