@@ -1,8 +1,9 @@
 #[macro_use]
 extern crate derivative;
 
-use std::fs::File;
-use std::io::{Read, Write};
+use std::fs;
+use fs::File;
+use std::io::{Read, Write, Error};
 use std::path::Path;
 
 use image::ImageError;
@@ -55,7 +56,7 @@ fn do_parse(i: &[u8]) -> String {
     let mut rest = i;
 
     let out = Arc::new(Mutex::new(BTreeMap::new()));
-    let pool = ThreadPool::new(32);
+    let pool = ThreadPool::new(num_cpus::get());
     while !rest.is_empty() {
         match packet::<VerboseError<&[u8]>>(&rest) {
             Ok((remains, packet)) => {
@@ -128,6 +129,13 @@ fn display_to_text(frame: u32, d: &Screen) -> Result<String, ImageError> {
         capi::TessBaseAPISetSourceResolution(tess.raw, 120);
     }
     let text = post_process_text(tess.get_utf8_text().unwrap());
+
+    match fs::remove_file(&fname) {
+        Ok(_) => {},
+        Err(err) => {
+            eprintln!("error deleting frame temp file {} -> {}", fname, err)
+        },
+    }
 
     Ok(format!(
         "{}\n{} --> {}\n{}\n\n",
