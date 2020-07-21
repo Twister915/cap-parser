@@ -1,11 +1,15 @@
-use image::{RgbaImage, Rgba, ImageBuffer};
+use std::cmp::{max, min};
+
+use image::{ImageBuffer, Rgba, RgbaImage};
 use nom::lib::std::collections::HashMap;
-use crate::parser::types::{YCrCbAColor, RLEEntry, CompositionObject, WindowDefinition, Packet, Segment, PresentationComposition, ObjectDefinition, Timestamp};
-use std::cmp::{min, max};
-use crate::parser::types::CompositionState::{EpochStart, AcquisitionPoint};
+
+use crate::parser::types::{
+    CompositionObject, ObjectDefinition, Packet, PresentationComposition, RLEEntry, Segment,
+    Timestamp, WindowDefinition, YCrCbAColor,
+};
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Display {
+pub struct Screen {
     pub image: RgbaImage,
     // microsecond offset for when to show this image
     pub begin_mis: u64,
@@ -31,7 +35,7 @@ pub struct Handler {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum HandleError {
-    BadObjectDefinition
+    BadObjectDefinition,
 }
 
 impl Handler {
@@ -47,7 +51,7 @@ impl Handler {
         }
     }
 
-    pub fn handle(&mut self, packet: Packet) -> Result<Option<Display>, HandleError> {
+    pub fn handle(&mut self, packet: Packet) -> Result<Option<Screen>, HandleError> {
         match packet.segment {
             Segment::PresentationCompositionSegment(pcs) => {
                 self.begin_at = match self.begin_at {
@@ -58,9 +62,7 @@ impl Handler {
                             Some(v)
                         }
                     }
-                    None => {
-                        Some(packet.pts)
-                    }
+                    None => Some(packet.pts),
                 };
 
                 self.end_at = match self.end_at {
@@ -71,9 +73,7 @@ impl Handler {
                             Some(v)
                         }
                     }
-                    None => {
-                        Some(packet.pts)
-                    }
+                    None => Some(packet.pts),
                 };
 
                 let res = if pcs.objects.is_empty() {
@@ -97,7 +97,12 @@ impl Handler {
                 Ok(None)
             }
             Segment::PaletteDefinitionSegment(pds) => {
-                let mut p: [YCrCbAColor; 256] = [YCrCbAColor { y: 16, cr: 128, cb: 128, a: 0 }; 256];
+                let mut p: [YCrCbAColor; 256] = [YCrCbAColor {
+                    y: 16,
+                    cr: 128,
+                    cb: 128,
+                    a: 0,
+                }; 256];
                 for entry in pds.entries {
                     p[entry.id as usize] = entry.color;
                 }
@@ -111,9 +116,7 @@ impl Handler {
                 self.object_data.insert(ods.id, ods);
                 Ok(None)
             }
-            Segment::End => {
-                Ok(None)
-            }
+            Segment::End => Ok(None),
         }
     }
 
@@ -134,10 +137,10 @@ impl Handler {
             return Err(HandleError::BadObjectDefinition);
         }
 
-        return Ok(())
+        return Ok(());
     }
 
-    fn generate_display(&mut self) -> Option<Display> {
+    fn generate_display(&mut self) -> Option<Screen> {
         if self.comp_objects.is_empty() {
             return None;
         }
@@ -218,7 +221,7 @@ impl Handler {
                     RLEEntry::Repeated { color: b, count } => {
                         let color = ycbcra_to_rgba(&palette[*b as usize]);
                         for _ in 0..*count {
-                            if x_offset >= obj_width  {
+                            if x_offset >= obj_width {
                                 x_offset = 0;
                                 y_offset = y_offset + 1;
                                 if y_offset > obj_height {
@@ -241,16 +244,16 @@ impl Handler {
                     }
                 };
             }
-        };
+        }
 
         let begin_at = pts_to_microsec(self.begin_at?);
         let dur = pts_to_microsec(self.end_at?) - begin_at;
-        let dis = Display {
+        let dis = Screen {
             image: img_data,
             begin_mis: begin_at,
             dur_mis: dur,
             x: img_x,
-            y: img_y
+            y: img_y,
         };
 
         self.reset();
@@ -309,12 +312,10 @@ fn rle_total_count(data: &Vec<RLEEntry>) -> usize {
     let mut out: usize = 0;
     for entry in data {
         match entry {
-            RLEEntry::Repeated {count: c, color: _} => {
+            RLEEntry::Repeated { count: c, color: _ } => {
                 out += *c as usize;
-            },
-            RLEEntry::Single(_) => {
-                out += 1
-            },
+            }
+            RLEEntry::Single(_) => out += 1,
             RLEEntry::EndOfLine => {}
         };
     }

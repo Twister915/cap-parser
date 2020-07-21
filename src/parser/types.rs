@@ -102,10 +102,7 @@ pub struct YCrCbAColor {
 pub enum RLEEntry {
     Single(u8),
 
-    Repeated {
-        count: u16,
-        color: u8,
-    },
+    Repeated { count: u16, color: u8 },
 
     EndOfLine,
 }

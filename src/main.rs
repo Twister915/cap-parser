@@ -1,96 +1,79 @@
 #[macro_use]
 extern crate derivative;
 
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::Path;
+
+use image::ImageError;
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
+use leptess::capi;
+use leptess::leptonica::pix_read;
+use leptess::tesseract::TessApi;
+use nom::error::VerboseError;
+
+use crate::parser::parse::packet;
+use crate::parser::renderer::{Handler, Screen};
+use nom::lib::std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use threadpool::ThreadPool;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-use std::fs::File;
-
 mod parser;
 
-use std::io::{Read, Write};
-use nom::error::VerboseError;
-use crate::parser::renderer::{Handler, Display};
-use crate::parser::parse::packet;
-use leptess::tesseract::{TessApi, TessInitError};
-use leptess::leptonica::pix_read;
-use std::path::Path;
-use image::ImageError;
-use leptess::capi;
-use std::ffi::{CStr, CString};
+fn timeit<Ret, F: FnOnce() -> Ret>(f: F) -> Ret {
+    let before = std::time::Instant::now();
+    let result = f();
+    let after = std::time::Instant::now();
+    println!("took {:?}", after - before);
 
-fn main() -> std::io::Result<()> {
-    let mut f = File::open("subs.sup")?;
-    let mut buffer = Vec::with_capacity(f.metadata()?.len() as usize);
-    f.read_to_end(&mut buffer)?;
-
-    let mut fout = File::create("subs.srt")?;
-    let text = do_parse(buffer.as_slice());
-    let bytes = text.into_bytes();
-    let bytes_slice = bytes.as_slice();
-    fout.write(bytes_slice)?;
-
-    Ok(())
+    result
 }
 
-fn do_parse<'a>(i: &'a [u8]) -> String {
-    let mut out: String = String::new();
+fn main() -> std::io::Result<()> {
+    timeit(|| {
+        let mut f = File::open("subs.sup")?;
+        let mut buffer = Vec::with_capacity(f.metadata()?.len() as usize);
+        f.read_to_end(&mut buffer)?;
+
+        let mut fout = File::create("subs.srt")?;
+        let text = do_parse(&buffer);
+        fout.write(text.as_bytes())?;
+
+        Ok(())
+    })
+}
+
+fn do_parse(i: &[u8]) -> String {
     let mut handler = Handler::new();
     let mut frame = 0;
 
     let mut rest = i;
-    const LANG: &str = "eng";
-    let mut tess = TessApi::new(None, LANG).unwrap();
-    // tess = unsafe {
-    //     capi::TessBaseAPIEnd(tess.raw);
-    //     capi::TessBaseAPIDelete(tess.raw);
-    //
-    //     tess.raw = capi::TessBaseAPICreate();
-    //
-    //     let re = capi::TessBaseAPIInit2(
-    //         tess.raw,
-    //         std::ptr::null_mut(),
-    //         CString::new(LANG).unwrap().as_ptr(),
-    //         capi::TessOcrEngineMode_OEM_TESSERACT_ONLY,
-    //     );
-    //
-    //     if re != 0 {
-    //         Err(TessInitError { code: re })
-    //     } else {
-    //         Ok(tess)
-    //     }
-    // }.unwrap();
 
-    unsafe {
-        capi::TessBaseAPISetPageSegMode(tess.raw, leptess::capi::TessPageSegMode_PSM_SPARSE_TEXT_OSD);
-    };
-
+    let out = Arc::new(Mutex::new(BTreeMap::new()));
+    let pool = ThreadPool::new(32);
     while !rest.is_empty() {
-        match packet::<'a, VerboseError<&'a [u8]>>(&rest) {
+        match packet::<VerboseError<&[u8]>>(&rest) {
             Ok((remains, packet)) => {
                 rest = remains;
                 match handler.handle(packet) {
-                    Ok(image) => {
-                        match image {
-                            Some(img) => {
-                                // println!("generated image {} at ({}, {}) -> ({}, {}) ts: {}, dur: {}",
-                                //          frame, img.x, img.y, img.x + w, img.y + h, img.begin_mis, img.dur_mis);
-                                // frame = frame + 1;
-                                match display_to_text(&mut tess, &frame, &img) {
-                                    Ok(data) => {
-                                        out = out + &data
-                                    }
-                                    Err(error) => eprintln!("error {:#?}\n", error)
+                    Ok(image) => match image {
+                        Some(img) => {
+                            let out = out.clone();
+                            pool.execute(move || match display_to_text(frame, &img) {
+                                Ok(data) => {
+                                    out.lock().unwrap().insert(frame, data);
                                 }
-                                frame = frame + 1;
-                            }
-                            None => {}
+                                Err(error) => eprintln!("error {:#?}\n", error),
+                            });
+                            frame = frame + 1;
                         }
-                    }
+                        None => {}
+                    },
                     Err(error) => {
                         eprintln!("error! {:#?}\n", error);
                         return "error".to_string();
@@ -102,9 +85,17 @@ fn do_parse<'a>(i: &'a [u8]) -> String {
                 return "error".to_string();
             }
         }
-    };
+    }
+    pool.join();
 
-    out
+    let lines: Vec<String> = Arc::try_unwrap(out)
+        .unwrap()
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(|(_, v)| v)
+        .collect();
+    lines.join("\n")
 }
 
 fn post_process_text(text: String) -> String {
@@ -116,9 +107,20 @@ fn post_process_text(text: String) -> String {
     out
 }
 
-fn display_to_text(tess: &mut TessApi, frame: &u32, d: &Display) -> Result<String, ImageError> {
+fn display_to_text(frame: u32, d: &Screen) -> Result<String, ImageError> {
+    const LANG: &str = "eng";
+    // TODO: thread local storage would probably be beneficial here
+    let mut tess = TessApi::new(None, LANG).unwrap();
+
+    unsafe {
+        capi::TessBaseAPISetPageSegMode(
+            tess.raw,
+            leptess::capi::TessPageSegMode_PSM_SPARSE_TEXT_OSD,
+        );
+    };
+
     let fname = format!("tmp/sub-{}.tiff", frame);
-    d.image.save(fname.clone())?;
+    d.image.save(&fname)?;
 
     let pix = pix_read(Path::new(&fname)).unwrap();
     tess.set_image(&pix);
@@ -127,7 +129,13 @@ fn display_to_text(tess: &mut TessApi, frame: &u32, d: &Display) -> Result<Strin
     }
     let text = post_process_text(tess.get_utf8_text().unwrap());
 
-    Ok(format!("{}\n{} --> {}\n{}\n\n", frame + 1, format_timestamp_microsec(d.begin_mis), format_timestamp_microsec(d.begin_mis + d.dur_mis), text))
+    Ok(format!(
+        "{}\n{} --> {}\n{}\n\n",
+        frame + 1,
+        format_timestamp_microsec(d.begin_mis),
+        format_timestamp_microsec(d.begin_mis + d.dur_mis),
+        text
+    ))
 }
 
 fn format_timestamp_microsec(ms: u64) -> String {
