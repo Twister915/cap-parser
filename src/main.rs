@@ -15,6 +15,9 @@ use nom::error::VerboseError;
 
 use crate::parser::parse::packet;
 use crate::parser::renderer::{Handler, Screen};
+use nom::lib::std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use threadpool::ThreadPool;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -46,21 +49,14 @@ fn main() -> std::io::Result<()> {
 }
 
 fn do_parse(i: &[u8]) -> String {
-    let mut out: String = String::new();
+    // let mut out: String = String::new();
     let mut handler = Handler::new();
     let mut frame = 0;
 
     let mut rest = i;
-    const LANG: &str = "eng";
-    let mut tess = TessApi::new(None, LANG).unwrap();
 
-    unsafe {
-        capi::TessBaseAPISetPageSegMode(
-            tess.raw,
-            leptess::capi::TessPageSegMode_PSM_SPARSE_TEXT_OSD,
-        );
-    };
-
+    let out = Arc::new(Mutex::new(BTreeMap::new()));
+    let pool = ThreadPool::new(32);
     while !rest.is_empty() {
         match packet::<VerboseError<&[u8]>>(&rest) {
             Ok((remains, packet)) => {
@@ -68,10 +64,13 @@ fn do_parse(i: &[u8]) -> String {
                 match handler.handle(packet) {
                     Ok(image) => match image {
                         Some(img) => {
-                            match display_to_text(&mut tess, frame, &img) {
-                                Ok(data) => out = out + &data,
+                            let out = out.clone();
+                            pool.execute(move || match display_to_text(frame, &img) {
+                                Ok(data) => {
+                                    out.lock().unwrap().insert(frame, data);
+                                }
                                 Err(error) => eprintln!("error {:#?}\n", error),
-                            }
+                            });
                             frame = frame + 1;
                         }
                         None => {}
@@ -88,8 +87,16 @@ fn do_parse(i: &[u8]) -> String {
             }
         }
     }
+    pool.join();
 
-    out
+    let lines: Vec<String> = Arc::try_unwrap(out)
+        .unwrap()
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(|(_, v)| v)
+        .collect();
+    lines.join("\n")
 }
 
 fn post_process_text(text: String) -> String {
@@ -101,7 +108,18 @@ fn post_process_text(text: String) -> String {
     out
 }
 
-fn display_to_text(tess: &mut TessApi, frame: u32, d: &Screen) -> Result<String, ImageError> {
+fn display_to_text(frame: u32, d: &Screen) -> Result<String, ImageError> {
+    const LANG: &str = "eng";
+    // TODO: thread local storage would probably be beneficial here
+    let mut tess = TessApi::new(None, LANG).unwrap();
+
+    unsafe {
+        capi::TessBaseAPISetPageSegMode(
+            tess.raw,
+            leptess::capi::TessPageSegMode_PSM_SPARSE_TEXT_OSD,
+        );
+    };
+
     let fname = format!("tmp/sub-{}.tiff", frame);
     d.image.save(&fname)?;
 
@@ -110,7 +128,7 @@ fn display_to_text(tess: &mut TessApi, frame: u32, d: &Screen) -> Result<String,
     unsafe {
         capi::TessBaseAPISetSourceResolution(tess.raw, 120);
     }
-    let text = post_process_text(timeit(|| tess.get_utf8_text().unwrap()));
+    let text = post_process_text(tess.get_utf8_text().unwrap());
 
     Ok(format!(
         "{}\n{} --> {}\n{}\n\n",
