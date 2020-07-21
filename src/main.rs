@@ -14,7 +14,7 @@ use leptess::tesseract::TessApi;
 use nom::error::VerboseError;
 
 use crate::parser::parse::packet;
-use crate::parser::renderer::{Display, Handler};
+use crate::parser::renderer::{Handler, Screen};
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -22,21 +22,30 @@ static GLOBAL: Jemalloc = Jemalloc;
 
 mod parser;
 
-fn main() -> std::io::Result<()> {
-    let mut f = File::open("subs.sup")?;
-    let mut buffer = Vec::with_capacity(f.metadata()?.len() as usize);
-    f.read_to_end(&mut buffer)?;
+fn timeit<Ret, F: FnOnce() -> Ret>(f: F) -> Ret {
+    let before = std::time::Instant::now();
+    let result = f();
+    let after = std::time::Instant::now();
+    println!("took {:?}", after - before);
 
-    let mut fout = File::create("subs.srt")?;
-    let text = do_parse(buffer.as_slice());
-    let bytes = text.into_bytes();
-    let bytes_slice = bytes.as_slice();
-    fout.write(bytes_slice)?;
-
-    Ok(())
+    result
 }
 
-fn do_parse<'a>(i: &'a [u8]) -> String {
+fn main() -> std::io::Result<()> {
+    timeit(|| {
+        let mut f = File::open("subs.sup")?;
+        let mut buffer = Vec::with_capacity(f.metadata()?.len() as usize);
+        f.read_to_end(&mut buffer)?;
+
+        let mut fout = File::create("subs.srt")?;
+        let text = do_parse(&buffer);
+        fout.write(text.as_bytes())?;
+
+        Ok(())
+    })
+}
+
+fn do_parse(i: &[u8]) -> String {
     let mut out: String = String::new();
     let mut handler = Handler::new();
     let mut frame = 0;
@@ -44,25 +53,6 @@ fn do_parse<'a>(i: &'a [u8]) -> String {
     let mut rest = i;
     const LANG: &str = "eng";
     let mut tess = TessApi::new(None, LANG).unwrap();
-    // tess = unsafe {
-    //     capi::TessBaseAPIEnd(tess.raw);
-    //     capi::TessBaseAPIDelete(tess.raw);
-    //
-    //     tess.raw = capi::TessBaseAPICreate();
-    //
-    //     let re = capi::TessBaseAPIInit2(
-    //         tess.raw,
-    //         std::ptr::null_mut(),
-    //         CString::new(LANG).unwrap().as_ptr(),
-    //         capi::TessOcrEngineMode_OEM_TESSERACT_ONLY,
-    //     );
-    //
-    //     if re != 0 {
-    //         Err(TessInitError { code: re })
-    //     } else {
-    //         Ok(tess)
-    //     }
-    // }.unwrap();
 
     unsafe {
         capi::TessBaseAPISetPageSegMode(
@@ -72,25 +62,20 @@ fn do_parse<'a>(i: &'a [u8]) -> String {
     };
 
     while !rest.is_empty() {
-        match packet::<'a, VerboseError<&'a [u8]>>(&rest) {
+        match packet::<VerboseError<&[u8]>>(&rest) {
             Ok((remains, packet)) => {
                 rest = remains;
                 match handler.handle(packet) {
-                    Ok(image) => {
-                        match image {
-                            Some(img) => {
-                                // println!("generated image {} at ({}, {}) -> ({}, {}) ts: {}, dur: {}",
-                                //          frame, img.x, img.y, img.x + w, img.y + h, img.begin_mis, img.dur_mis);
-                                // frame = frame + 1;
-                                match display_to_text(&mut tess, &frame, &img) {
-                                    Ok(data) => out = out + &data,
-                                    Err(error) => eprintln!("error {:#?}\n", error),
-                                }
-                                frame = frame + 1;
+                    Ok(image) => match image {
+                        Some(img) => {
+                            match display_to_text(&mut tess, frame, &img) {
+                                Ok(data) => out = out + &data,
+                                Err(error) => eprintln!("error {:#?}\n", error),
                             }
-                            None => {}
+                            frame = frame + 1;
                         }
-                    }
+                        None => {}
+                    },
                     Err(error) => {
                         eprintln!("error! {:#?}\n", error);
                         return "error".to_string();
@@ -116,16 +101,16 @@ fn post_process_text(text: String) -> String {
     out
 }
 
-fn display_to_text(tess: &mut TessApi, frame: &u32, d: &Display) -> Result<String, ImageError> {
+fn display_to_text(tess: &mut TessApi, frame: u32, d: &Screen) -> Result<String, ImageError> {
     let fname = format!("tmp/sub-{}.tiff", frame);
-    d.image.save(fname.clone())?;
+    d.image.save(&fname)?;
 
     let pix = pix_read(Path::new(&fname)).unwrap();
     tess.set_image(&pix);
     unsafe {
         capi::TessBaseAPISetSourceResolution(tess.raw, 120);
     }
-    let text = post_process_text(tess.get_utf8_text().unwrap());
+    let text = post_process_text(timeit(|| tess.get_utf8_text().unwrap()));
 
     Ok(format!(
         "{}\n{} --> {}\n{}\n\n",

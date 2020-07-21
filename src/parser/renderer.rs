@@ -9,7 +9,7 @@ use crate::parser::types::{
 };
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct Display {
+pub struct Screen {
     pub image: RgbaImage,
     // microsecond offset for when to show this image
     pub begin_mis: u64,
@@ -51,7 +51,7 @@ impl Handler {
         }
     }
 
-    pub fn handle(&mut self, packet: Packet) -> Result<Option<Display>, HandleError> {
+    pub fn handle(&mut self, packet: Packet) -> Result<Option<Screen>, HandleError> {
         match packet.segment {
             Segment::PresentationCompositionSegment(pcs) => {
                 self.begin_at = match self.begin_at {
@@ -140,7 +140,7 @@ impl Handler {
         return Ok(());
     }
 
-    fn generate_display(&mut self) -> Option<Display> {
+    fn generate_display(&mut self) -> Option<Screen> {
         if self.comp_objects.is_empty() {
             return None;
         }
@@ -248,7 +248,7 @@ impl Handler {
 
         let begin_at = pts_to_microsec(self.begin_at?);
         let dur = pts_to_microsec(self.end_at?) - begin_at;
-        let dis = Display {
+        let dis = Screen {
             image: img_data,
             begin_mis: begin_at,
             dur_mis: dur,
