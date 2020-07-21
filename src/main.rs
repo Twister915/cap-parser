@@ -49,7 +49,6 @@ fn main() -> std::io::Result<()> {
 }
 
 fn do_parse(i: &[u8]) -> String {
-    // let mut out: String = String::new();
     let mut handler = Handler::new();
     let mut frame = 0;
 
