@@ -26,7 +26,7 @@ pub struct Handler {
     composition: Option<PresentationComposition>,
     comp_objects: HashMap<u16, CompositionObject>,
     #[derivative(Debug = "ignore")]
-    palettes: HashMap<u8, [YCrCbAColor; 256]>,
+    palettes: HashMap<u8, [Rgba<u8>; 256]>,
     windows: HashMap<u8, WindowDefinition>,
     object_data: HashMap<u16, ObjectDefinition>,
     begin_at: Option<Timestamp>,
@@ -97,14 +97,9 @@ impl Handler {
                 Ok(None)
             }
             Segment::PaletteDefinitionSegment(pds) => {
-                let mut p: [YCrCbAColor; 256] = [YCrCbAColor {
-                    y: 16,
-                    cr: 128,
-                    cb: 128,
-                    a: 0,
-                }; 256];
+                let mut p: [Rgba<u8>; 256] = [Rgba::<u8>([0, 0, 0, 0]); 256];
                 for entry in pds.entries {
-                    p[entry.id as usize] = entry.color;
+                    p[entry.id as usize] = ycbcra_to_rgba(&entry.color);
                 }
 
                 self.palettes.insert(pds.id.clone(), p);
@@ -204,7 +199,7 @@ impl Handler {
             for d in &obj.data_raw {
                 match d {
                     RLEEntry::Single(b) => {
-                        let color = ycbcra_to_rgba(&palette[*b as usize]);
+                        let color = palette[*b as usize];
                         if x_offset >= obj_width {
                             x_offset = 0;
                             y_offset = y_offset + 1;
@@ -219,7 +214,7 @@ impl Handler {
                         x_offset = x_offset + 1;
                     }
                     RLEEntry::Repeated { color: b, count } => {
-                        let color = ycbcra_to_rgba(&palette[*b as usize]);
+                        let color = palette[*b as usize];
                         for _ in 0..*count {
                             if x_offset >= obj_width {
                                 x_offset = 0;
