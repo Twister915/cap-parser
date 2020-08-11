@@ -13,10 +13,12 @@ use self::nom::{
     IResult, InputTake,
 };
 
+#[inline]
 fn timestamp<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], Timestamp, E> {
     map(be_u32, Timestamp::from)(i)
 }
 
+#[inline]
 fn bool_byte<'a, E: ParseError<&'a [u8]>>(
     f_val: u8,
     t_val: u8,
@@ -104,6 +106,7 @@ fn seg_ods<'a, E: ParseError<&'a [u8]>>(
     }
 }
 
+#[inline]
 fn rle_data<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], Vec<RLEEntry>, E> {
     many1(rle_entry)(i)
 }
@@ -188,6 +191,7 @@ fn seg_pcs<'a, E: ParseError<&'a [u8]>>(
     )
 }
 
+#[inline]
 fn seg_pcs_cs<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], CompositionState, E> {
     alt((
         value(CompositionState::Normal, tag([0x00])),

@@ -3,12 +3,10 @@ extern crate derivative;
 
 use std::fs;
 use fs::File;
-use std::io::{Read, Write, Error};
+use std::io::{Read, Write};
 use std::path::Path;
 
 use image::ImageError;
-#[cfg(not(target_env = "msvc"))]
-use jemallocator::Jemalloc;
 use leptess::capi;
 use leptess::leptonica::pix_read;
 use leptess::tesseract::TessApi;
@@ -19,6 +17,9 @@ use crate::parser::renderer::{Handler, Screen};
 use nom::lib::std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use threadpool::ThreadPool;
+
+#[cfg(not(target_env = "msvc"))]
+use jemallocator::Jemalloc;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -66,8 +67,13 @@ fn do_parse(i: &[u8]) -> String {
                         Some(img) => {
                             let out = out.clone();
                             pool.execute(move || match display_to_text(frame, &img) {
-                                Ok(data) => {
-                                    out.lock().unwrap().insert(frame, data);
+                                Ok(res) => {
+                                    match res {
+                                        Some(data) => {
+                                            out.lock().unwrap().insert(frame, data);
+                                        },
+                                        None => {}
+                                    };
                                 }
                                 Err(error) => eprintln!("error {:#?}\n", error),
                             });
@@ -99,16 +105,25 @@ fn do_parse(i: &[u8]) -> String {
     lines.join("\n")
 }
 
-fn post_process_text(text: String) -> String {
+fn post_process_text(text: String) -> Option<String> {
     let mut out = text;
     out = out.replace("|", "I");
-    out = out.trim_start().trim_end().to_string();
-    out = out.replace("\n", " ");
+    out = out.split("\n")
+        .into_iter()
+        .map(|line| line.replace("\n", " "))
+        .map(|line| line.trim_start().trim_end().to_string())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<String>>()
+        .join("\n");
 
-    out
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
-fn display_to_text(frame: u32, d: &Screen) -> Result<String, ImageError> {
+fn display_to_text(frame: u32, d: &Screen) -> Result<Option<String>, ImageError> {
     const LANG: &str = "eng";
     // TODO: thread local storage would probably be beneficial here
     let mut tess = TessApi::new(None, LANG).unwrap();
@@ -137,13 +152,13 @@ fn display_to_text(frame: u32, d: &Screen) -> Result<String, ImageError> {
         },
     }
 
-    Ok(format!(
+    Ok(text.map(|data| format!(
         "{}\n{} --> {}\n{}\n\n",
         frame + 1,
         format_timestamp_microsec(d.begin_mis),
         format_timestamp_microsec(d.begin_mis + d.dur_mis),
-        text
-    ))
+        data
+    )))
 }
 
 fn format_timestamp_microsec(ms: u64) -> String {
