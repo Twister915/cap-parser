@@ -17,10 +17,10 @@ pub enum CompositionState {
 #[derive(Derivative, PartialEq, Clone)]
 #[derivative(Debug)]
 pub enum Segment {
-    PresentationCompositionSegment(PresentationComposition),
-    WindowDefinitionSegment(Vec<WindowDefinition>),
-    PaletteDefinitionSegment(PaletteDefinition),
-    ObjectDefinitionSegment(ObjectDefinition),
+    PresentationComposition(PresentationComposition),
+    WindowDefinition(Vec<WindowDefinition>),
+    PaletteDefinition(PaletteDefinition),
+    ObjectDefinition(ObjectDefinition),
     End,
 }
 
@@ -108,30 +108,3 @@ pub enum RLEEntry {
 }
 
 pub type RLEData = Vec<RLEEntry>;
-
-pub trait RleDecode {
-    fn to_byte_lines(&self) -> Vec<Vec<u8>>;
-}
-
-impl RleDecode for RLEData {
-    fn to_byte_lines(&self) -> Vec<Vec<u8>> {
-        let mut lines: Vec<Vec<u8>> = Vec::new();
-        let mut line: Vec<u8> = Vec::new();
-        for entry in self {
-            match entry {
-                RLEEntry::Single(b) => {
-                    line.push(*b);
-                }
-                RLEEntry::Repeated { count, color } => {
-                    line.resize(line.len() + (*count as usize), *color);
-                }
-                RLEEntry::EndOfLine => {
-                    lines.push(line.clone());
-                    line.clear();
-                }
-            };
-        }
-
-        lines
-    }
-}
