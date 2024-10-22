@@ -49,7 +49,7 @@ fn seg_pds<'a, E: ParseError<&'a [u8]>>(
             context("entries", count(seg_pds_entry, usize::from((size - 2) / 5))),
         )),
         |(id, version, entries)| {
-            Segment::PaletteDefinitionSegment(PaletteDefinition {
+            Segment::PaletteDefinition(PaletteDefinition {
                 id,
                 version,
                 entries,
@@ -92,12 +92,12 @@ fn seg_ods<'a, E: ParseError<&'a [u8]>>(
         let (_, rle_data) = rle_data(data_raw)?;
 
         Ok((
-            &rest,
-            Segment::ObjectDefinitionSegment(ObjectDefinition {
+            rest,
+            Segment::ObjectDefinition(ObjectDefinition {
                 id,
                 version,
-                is_last_in_sequence: !((flag_raw & 0x40) == 0),
-                is_first_in_sequence: !((flag_raw & 0x80) == 0),
+                is_last_in_sequence: (flag_raw & 0x40) != 0,
+                is_first_in_sequence: (flag_raw & 0x80) != 0,
                 width,
                 height,
                 data_raw: rle_data,
@@ -144,11 +144,11 @@ fn rle_entry<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], RLEE
     let col = if b1 & 0x80 == 0 {
         0
     } else {
-        l_consumed = l_consumed + 1;
+        l_consumed += 1;
         i[l_consumed]
     };
 
-    let rest = &i[((1 + l_consumed) as usize)..];
+    let rest = &i[(1 + l_consumed)..];
     Ok((
         rest,
         RLEEntry::Repeated {
@@ -178,7 +178,7 @@ fn seg_pcs<'a, E: ParseError<&'a [u8]>>(
             }),
         )),
         |(w, h, _, cn, s, u, pid, objs)| {
-            Segment::PresentationCompositionSegment(PresentationComposition {
+            Segment::PresentationComposition(PresentationComposition {
                 width: w,
                 height: h,
                 number: cn,
@@ -253,7 +253,7 @@ fn seg_wds<'a, E: ParseError<&'a [u8]>>(
                 count(context("def", seg_wds_win), usize::from((size - 1) / 9)),
             ),
         ),
-        |w| Segment::WindowDefinitionSegment(w),
+        Segment::WindowDefinition,
     )
 }
 
@@ -276,7 +276,7 @@ fn seg_wds_win<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], Wi
     )(i)
 }
 
-pub fn packet<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], Packet, E> {
+pub fn get_packet<'a, E: ParseError<&'a [u8]>>(i: &'a [u8]) -> IResult<&'a [u8], Packet, E> {
     context(
         "packet",
         map(

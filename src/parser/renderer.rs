@@ -12,9 +12,9 @@ use crate::parser::types::{
 pub struct Screen {
     pub image: RgbaImage,
     // microsecond offset for when to show this image
-    pub begin_mis: u64,
+    pub begin_us: u64,
     // microsecond duration for how long to show this image
-    pub dur_mis: u64,
+    pub dur_us: u64,
 
     pub x: u32,
     pub y: u32,
@@ -22,11 +22,11 @@ pub struct Screen {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct Handler {
+pub struct PacketHandler {
     composition: Option<PresentationComposition>,
     comp_objects: HashMap<u16, CompositionObject>,
     #[derivative(Debug = "ignore")]
-    palettes: HashMap<u8, [Rgba<u8>; 256]>,
+    palette_entries: HashMap<u8, [Rgba<u8>; 256]>,
     windows: HashMap<u8, WindowDefinition>,
     object_data: HashMap<u16, ObjectDefinition>,
     begin_at: Option<Timestamp>,
@@ -38,12 +38,12 @@ pub enum HandleError {
     BadObjectDefinition,
 }
 
-impl Handler {
-    pub fn new() -> Handler {
-        Handler {
+impl PacketHandler {
+    pub fn new() -> PacketHandler {
+        PacketHandler {
             composition: None,
             comp_objects: HashMap::new(),
-            palettes: HashMap::new(),
+            palette_entries: HashMap::new(),
             windows: HashMap::new(),
             object_data: HashMap::new(),
             begin_at: None,
@@ -53,7 +53,7 @@ impl Handler {
 
     pub fn handle(&mut self, packet: Packet) -> Result<Option<Screen>, HandleError> {
         match packet.segment {
-            Segment::PresentationCompositionSegment(pcs) => {
+            Segment::PresentationComposition(pcs) => {
                 self.begin_at = match self.begin_at {
                     Some(v) => {
                         if packet.pts < v {
@@ -89,24 +89,24 @@ impl Handler {
 
                 Ok(res)
             }
-            Segment::WindowDefinitionSegment(windows) => {
+            Segment::WindowDefinition(windows) => {
                 for win in windows {
                     self.windows.insert(win.id, win);
                 }
 
                 Ok(None)
             }
-            Segment::PaletteDefinitionSegment(pds) => {
+            Segment::PaletteDefinition(pallete_definition) => {
                 let mut p: [Rgba<u8>; 256] = [Rgba::<u8>([0, 0, 0, 0]); 256];
-                for entry in pds.entries {
+                for entry in pallete_definition.entries {
                     p[entry.id as usize] = ycbcra_to_rgba(&entry.color);
                 }
 
-                self.palettes.insert(pds.id.clone(), p);
+                self.palette_entries.insert(pallete_definition.id, p);
 
                 Ok(None)
             }
-            Segment::ObjectDefinitionSegment(ods) => {
+            Segment::ObjectDefinition(ods) => {
                 self.verify_object_data(&ods)?;
                 self.object_data.insert(ods.id, ods);
                 Ok(None)
@@ -132,7 +132,7 @@ impl Handler {
             return Err(HandleError::BadObjectDefinition);
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn generate_display(&mut self) -> Option<Screen> {
@@ -163,17 +163,17 @@ impl Handler {
         const PADDING_PERCENT_Y: f32 = 0.03;
         let padding_x = (pcs.width as f32 * PADDING_PERCENT_X) as u32;
         let dx = img_x - (max(0, img_x as i32 - padding_x as i32) as u32);
-        img_width = img_width + (2 * dx);
-        img_x = img_x - dx;
+        img_width += 2 * dx;
+        img_x -= dx;
 
         let padding_y = (pcs.height as f32 * PADDING_PERCENT_Y) as u32;
         let dy = img_y - (max(0, img_y as i32 - padding_y as i32) as u32);
-        img_height = img_height + (2 * dy);
-        img_y = img_y - dy;
+        img_height += 2 * dy;
+        img_y -= dy;
 
         let mut img_data = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(img_width, img_height);
 
-        let palette = self.palettes.get(&pcs.palette_id)?;
+        let palette = self.palette_entries.get(&pcs.palette_id)?;
         for comp_obj in &pcs.objects {
             let id = comp_obj.id;
             let obj = self.object_data.get(&id)?;
@@ -202,7 +202,7 @@ impl Handler {
                         let color = palette[*b as usize];
                         if x_offset >= obj_width {
                             x_offset = 0;
-                            y_offset = y_offset + 1;
+                            y_offset += 1;
                             if y_offset > obj_height {
                                 return None;
                             }
@@ -211,14 +211,14 @@ impl Handler {
                         if x_offset < obj_width_show && y_offset < obj_height_show {
                             img_data.put_pixel(x0 + x_offset, y0 + y_offset, color);
                         }
-                        x_offset = x_offset + 1;
+                        x_offset += 1;
                     }
                     RLEEntry::Repeated { color: b, count } => {
                         let color = palette[*b as usize];
                         for _ in 0..*count {
                             if x_offset >= obj_width {
                                 x_offset = 0;
-                                y_offset = y_offset + 1;
+                                y_offset += 1;
                                 if y_offset > obj_height {
                                     return None;
                                 }
@@ -227,12 +227,12 @@ impl Handler {
                             if x_offset < obj_width_show && y_offset < obj_height_show {
                                 img_data.put_pixel(x0 + x_offset, y0 + y_offset, color);
                             }
-                            x_offset = x_offset + 1;
+                            x_offset += 1;
                         }
                     }
                     RLEEntry::EndOfLine => {
                         x_offset = 0;
-                        y_offset = y_offset + 1;
+                        y_offset += 1;
                         if y_offset > obj_height {
                             return None;
                         }
@@ -245,8 +245,8 @@ impl Handler {
         let dur = pts_to_microsec(self.end_at?) - begin_at;
         let dis = Screen {
             image: img_data,
-            begin_mis: begin_at,
-            dur_mis: dur,
+            begin_us: begin_at,
+            dur_us: dur,
             x: img_x,
             y: img_y,
         };
@@ -257,7 +257,7 @@ impl Handler {
     }
 
     fn reset(&mut self) {
-        self.palettes.clear();
+        self.palette_entries.clear();
         self.comp_objects.clear();
         self.object_data.clear();
         self.windows.clear();
@@ -300,7 +300,7 @@ fn constrain_double_to_byte(data: f64) -> u8 {
 }
 
 fn pts_to_microsec(ts: Timestamp) -> u64 {
-    return (ts as u64 / 9) * 100;
+    (ts as u64 / 9) * 100
 }
 
 fn rle_total_count(data: &Vec<RLEEntry>) -> usize {
